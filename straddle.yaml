@@ -1,0 +1,39 @@
+# viewer — a micro HTML/Markdown document viewer (LCD launcher program).
+#
+# Named "viewer" (not "browser") to avoid confusion with the user's web browser.
+# Renders a growing subset of HTML — and Markdown (converted to HTML on-device
+# via the vendored MD4C) — into LVGL on the LCD. The whole viewer (parser, IR,
+# renderer, launcher program, CLI verb, http(s) fetch) lives in conditional
+# slices and registers via the when:-gated viewerLcdRegister hook.
+#
+# viewerInit() registers the `webview` CLI verb (sets viewer.web.url so the
+# browser-side viewer window pops open); the LCD viewer + `lcdview` verb live in
+# the when:-gated viewerLcdRegister hook.
+#
+# Browser side (browser/): a "Window → Viewer" floating window that renders LOCAL
+# Markdown (browser fonts) / HTML (passthrough); http(s) links open in a new tab
+# (no device proxy — would need APSTA).
+#
+# Config: s.viewer.urlbar (bool)
+schema_version: 1
+name: spangap/viewer
+prefix: viewer
+version: 0.1.0
+firmware: esp-idf
+browser: browser
+platforms: [idf]
+# spangap-core is implicit (the empty-prefix platform foundation) — not listed.
+# spangap-net is a SOFT dep: the http(s) fetcher lives in conditional/spangap-net/
+# (compiled only when net is staged) and is #if CONFIG_SPANGAP_NET-gated in the
+# viewer. Without net the viewer still builds and serves file:// only.
+additional_installs:
+  - spangap/spangap-net
+init:
+  - call: viewerInit
+  - call: viewerLcdRegister
+    when: spangap/spangap-lcd
+# Browser auto-registration: adds the "Window → Viewer" entry and subscribes to
+# viewer.web.url. The buildable's MainLayout also mounts ViewerWindow (parallel
+# to NomadWindow/MapWindow).
+browser_register:
+  - call: registerViewer

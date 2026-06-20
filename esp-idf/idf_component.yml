@@ -1,0 +1,12 @@
+description: "viewer: a micro HTML/Markdown document viewer (LCD launcher program). Renders a growing HTML subset — and Markdown via vendored MD4C — into LVGL."
+url: https://github.com/spangap/viewer
+version: "0.1.0"
+license: "Apache-2.0"
+targets:
+  - esp32s3
+# Cross-straddle deps go in straddle.yaml's requires:/additional_installs:, not
+# here. MD4C is vendored under md4c/ (not a registry component). Only the IDF
+# baseline is declared.
+dependencies:
+  idf:
+    version: ">=5.5"
