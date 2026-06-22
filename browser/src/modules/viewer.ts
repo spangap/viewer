@@ -1,13 +1,17 @@
 /**
- * viewer — browser-side local document viewer (SPA side).
+ * viewer — browser-side document viewer (SPA side).
  *
- * A floating window (Window → Viewer) that renders LOCAL Markdown (browser
- * fonts, same subset as the LCD) and LOCAL HTML (passed through). It does NOT
- * fetch http(s) — there's no device proxy (would need APSTA); Markdown links to
- * http(s) just open in the user's own browser tab.
+ * A floating window (Window → Viewer) that loads a URL into an <iframe> served by
+ * the device's web server (Markdown is converted to HTML server-side). It runs at
+ * the device origin, so same-origin images/links/cookies work.
  *
- * The device CLI verb `webview <path>` sets the ephemeral key `viewer.web.url`;
- * this module watches it and pops the window open on that document.
+ * Start-up (mirrors the LCD), driven by device config (see firmware viewer.cpp):
+ *   - on the first storage sync, a one-shot `s.viewer.once_web` opens the window
+ *     (then is consumed) and is raised on top, after any windows the SPA restored
+ *     from localStorage. That one-shot is the ONLY thing that auto-opens.
+ *   - opening it from the Window menu (a manual launch) goes to `home_web`.
+ *   - the device CLI verb `webview <path>` (ephemeral `viewer.web.url`) opens that
+ *     exact path.
  */
 import { ref, watch } from 'vue'
 import { useDeviceStore } from 'spangap-browser/stores/device'
@@ -17,12 +21,34 @@ import { useMenuStore } from 'spangap-browser/stores/menu'
 export const viewerWebVisible = ref(false)
 export const viewerWebFocus = ref(0)
 
-/* Current document location, driven by `webview` (viewer.web.url) or the
- * window's own address bar. */
+/* Current document location, driven by `webview` (viewer.web.url), the start-up
+ * logic, or the window's own address bar. */
 export const viewerWebUrl = ref('')
 
-/** Show + raise the viewer window (menu action / on a new viewer.web.url). */
-export function showViewer() { viewerWebVisible.value = true; viewerWebFocus.value++ }
+const HOME_FALLBACK = '/WELCOME.md'
+
+function homeWeb(device: ReturnType<typeof useDeviceStore>): string {
+  const h = device.get('s.viewer.home_web')
+  return typeof h === 'string' && h ? h : HOME_FALLBACK
+}
+
+/* Make the window visible and raise it to the front (the focus nonce → MainLayout
+ * → FloatingWindow.bringToFront). On page load other windows call bringToFront()
+ * from their localStorage restore on mount, which can land them above us if they
+ * run just after; re-raise on the next macrotask so the viewer ends up on top
+ * regardless of that ordering. */
+function raise() {
+  viewerWebVisible.value = true
+  viewerWebFocus.value++
+  setTimeout(() => { if (viewerWebVisible.value) viewerWebFocus.value++ }, 150)
+}
+
+/** Menu action: a manual launch opens the window on its home page (only when it
+ *  wasn't already open, so re-selecting it just re-focuses). */
+export function showViewer() {
+  if (!viewerWebVisible.value) viewerWebUrl.value = homeWeb(useDeviceStore())
+  raise()
+}
 
 export function registerViewer() {
   const menu = useMenuStore()
@@ -34,6 +60,26 @@ export function registerViewer() {
 
   /* `webview <path>` on the device sets ephemeral viewer.web.url → open it. */
   watch(() => device.get('viewer.web.url'), (u) => {
-    if (typeof u === 'string' && u && u !== 'welcome') { viewerWebUrl.value = u; showViewer() }
+    if (typeof u === 'string' && u && u !== 'welcome') { viewerWebUrl.value = u; raise() }
   })
+
+  /* Start-up: the viewer OWNS its open state on each load (overriding whatever
+   * FloatingWindow restored from localStorage). ONLY a one-shot once_web opens it
+   * (then is consumed); otherwise it stays closed. We trigger on `device.synced`
+   * — the first full storage dump — so s.viewer.* values are populated (raw
+   * `connected` fires too early). raise() runs after the SPA restored its saved
+   * windows, so the viewer ends up on top. */
+  let started = false
+  watch(() => device.synced, (s) => {
+    if (started || !s) return
+    started = true
+    const once = device.get('s.viewer.once_web')
+    if (typeof once === 'string' && once) {
+      viewerWebUrl.value = once
+      device.set('s.viewer.once_web', '')          /* consume the one-shot */
+      raise()
+    } else {
+      viewerWebVisible.value = false               /* nothing to show — stay closed */
+    }
+  }, { immediate: true })
 }

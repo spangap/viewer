@@ -1,32 +1,34 @@
 /**
  * viewer_lcd — the document viewer's LCD slice.
  *
- * Pipeline:  bytes ──(.md? MD4C)──► HTML ──subset parser──► IR (blocks+runs)
- *                                                              │
- *                                                              ▼
- *                                          LVGL: flex column of spangroups
- *                                          (link-free prose) / flex-wrap rows
- *                                          of labels (link blocks) + mono labels
+ * Pipeline:  HTTP fetch ──► HTML ──subset parser──► IR (blocks+runs)
+ *                                                       │
+ *                                                       ▼
+ *                                   LVGL: flex column of spangroups
+ *                                   (link-free prose) / flex-wrap rows
+ *                                   of labels (link blocks) + mono labels
  *
- * The IR is the spine: both Markdown (converted to HTML on-device via vendored
- * MD4C) and HTML lower into one render-oriented tree, so growing the supported
- * markup is "one block/flag here + one case in the renderer". The subset is also
- * the sanitizer — <script>/<style> and unknown tags never reach the IR.
+ * Markdown→HTML happens in the web server now, not here: a bare path / file://
+ * is fetched from the device's own server at 127.0.0.1 (which converts *.md to
+ * HTML), an explicit http(s):// is fetched directly. The IR is the spine: HTML
+ * lowers into one render-oriented tree. The subset parser is also the sanitizer —
+ * <script>/<style> and unknown tags never reach the IR.
  *
  * Emphasis is by colour on proportional faces (no bold/italic font blobs):
  * body = dark grey, bold = black, italic = light grey; code uses the platform
  * mono font; headings use the larger montserrat_16_latin. Background is white.
  *
- * I/O off the lcd task: a nav worker task does file/http loads (which block) and
+ * I/O off the lcd task: a nav worker task does the HTTP load (which blocks) and
  * then hops the render onto the lcd task via lcdRun — the lcd task never blocks
- * on disk or the network. Links are clickable (worker-dispatched), with a
- * history stack + a floating Back button and relative-URL resolution.
+ * on the network. Links are clickable (worker-dispatched), with a history stack,
+ * a Back button (in the address bar) and relative-URL resolution. The page
+ * <title> goes to the status bar; the address bar shows on Space.
  *
  * This whole file lives under conditional/spangap-lcd/, compiled only when the
- * lcd straddle is staged. http(s) is #if CONFIG_SPANGAP_NET-gated; without net
- * the viewer serves file:// (and a bare path) only.
+ * lcd straddle is staged. The HTTP client is #if CONFIG_SPANGAP_NET-gated; the
+ * local path also needs the web server (the normal case for any viewer build).
  *
- * Config:    s.viewer.urlbar (bool)
+ * Config:    s.viewer.{once_lcd,home_lcd}  (start-up; see viewer.cpp)
  * Ephemeral: viewer.lcd.url   (current LCD location; webview uses viewer.web.url)
  */
 #include "viewer.h"
@@ -36,8 +38,6 @@
 #include "lcd.h"          /* pulls in lvgl.h; fonts */
 #include "fs.h"
 #include "storage.h"
-
-#include "md4c-html.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -72,8 +72,7 @@
  * whole node down, not just the viewer. These bound input, IR, and widget count
  * so the viewer can only ever consume a safe slice of PSRAM; oversize content is
  * truncated with a notice. (Real fix for huge docs is viewport virtualization,
- * deferred.) */
-static const size_t VIEWER_MAX_BYTES  = 128 * 1024;  /* fetched / read input   */
+ * deferred.) Input bytes are capped by the fetcher (FETCH_CAP) / web server. */
 static const size_t VIEWER_MAX_BLOCKS = 2000;        /* IR blocks              */
 static const int    VIEWER_MAX_OBJS   = 800;         /* LVGL objects per render */
 
@@ -357,33 +356,30 @@ static void parseHtml(const std::string& html, Doc& doc, std::string& title) {
     while (!title.empty() && title.back() == ' ') title.pop_back();
 }
 
-/* ─────────────── Markdown → HTML (vendored MD4C) ─────────────── */
-
-static void mdSink(const MD_CHAR* d, MD_SIZE n, void* u) {
-    ((std::string*)u)->append(d, (size_t)n);
-}
-static std::string mdToHtml(const std::string& md) {
-    std::string out;
-    md_html(md.data(), (MD_SIZE)md.size(), mdSink, &out, 0, 0);
-    return out;
-}
-
 /* ─────────────── state ─────────────── */
 
 static SemaphoreHandle_t s_mux  = nullptr;          /* guards s_html/s_url/req/history */
 static std::string       s_html;
-static std::string       s_url   = "welcome";
+static std::string       s_url;
 static std::vector<std::string> s_history;
 static std::string       s_reqUrl;
 static bool              s_reqPending = false;
 static bool              s_reqIsBack  = false;
+static bool              s_reqRetry   = false;   /* retry the load if it fails (boot) */
 static TaskHandle_t      s_worker = nullptr;
+/* True for the window of a show() that follows a nav WE issued (lcdview / link /
+ * boot), so the per-program show callback doesn't bounce a programmatic open
+ * back to the home page. Cleared by viewerOnShow. */
+static bool              s_navInitiatedShow = false;
 
 static lv_obj_t*               s_page   = nullptr;  /* scroll column (lcd task) */
+static lv_obj_t*               s_bar    = nullptr;  /* row: [back][urlbar], hidden until Space */
 static lv_obj_t*               s_urlbar = nullptr;
 static std::vector<std::string> s_linkHrefs;        /* per-doc, lcd task only */
 
-static void requestNav(const std::string& url);     /* defined below */
+static void showAddrBar(bool on);                   /* defined below */
+
+static void requestNav(const std::string& url, bool retry = false);  /* defined below */
 
 /* ─────────────── URL resolution ─────────────── */
 
@@ -442,83 +438,47 @@ static std::string resolveUrl(const std::string& base, const std::string& href) 
 
 /* ─────────────── loading (worker task) ─────────────── */
 
-static const char* const WELCOME_MD =
-    "# Viewer\n\n"
-    "A tiny **HTML** / *Markdown* viewer that renders a growing subset into LVGL.\n\n"
-    "- `file://` documents, a bare path, and `http(s)://` (with the network straddle)\n"
-    "- Markdown is converted to HTML on-device\n"
-    "- Links are tappable; the **<** button goes back\n\n"
-    "Try a link: [About this viewer](about)\n\n"
-    "Open one from the CLI:\n\n"
-    "```\nlcdview /sdcard/readme.md\nlcdview https://example.com/\n```\n\n"
-    "---\n\n"
-    "Emphasis is shown by colour: **bold** is black, *italic* is grey, "
-    "`code` is monospace.\n";
-
-static const char* const ABOUT_MD =
-    "# About\n\n"
-    "You tapped a link — and *this* page loaded. Tap the **<** button (bottom-left) "
-    "or this link to go [back home](welcome).\n\n"
-    "## How it renders\n\n"
-    "Markdown is parsed to HTML by MD4C, then a small subset parser builds an "
-    "intermediate tree, which the LVGL backend draws as spangroups (prose) and "
-    "tappable label rows (links).\n\n"
-    "1. parse\n2. build IR\n3. render\n\n"
-    "> Block quotes, lists, rules, and `inline code` are all supported.\n";
-
-static bool endsWithCI(const std::string& s, const char* suf) {
-    size_t n = strlen(suf);
-    return s.size() >= n && strcasecmp(s.c_str() + s.size() - n, suf) == 0;
-}
-
-static bool sniffMd(const std::string& url, const std::string& body, const std::string& ctype) {
-    if (ctype.find("markdown") != std::string::npos) return true;
-    if (ctype.find("html") != std::string::npos)     return false;
-    if (endsWithCI(url, ".md") || endsWithCI(url, ".markdown") || endsWithCI(url, ".mkd")) return true;
-    if (endsWithCI(url, ".html") || endsWithCI(url, ".htm")) return false;
-    size_t i = 0; while (i < body.size() && isspace((unsigned char)body[i])) i++;
-    return !(i < body.size() && body[i] == '<');
-}
-
+/* Markdown→HTML now happens in the web server, not here: the viewer fetches its
+ * documents over HTTP and renders the HTML it gets back. A bare path or file://
+ * is fetched from the device's own web server at 127.0.0.1 (plain HTTP — the
+ * server exempts loopback from the https redirect + auth realm), which converts
+ * *.md to HTML and serves *.html / text as-is. An explicit http(s):// URL is
+ * fetched directly (external). Everything reaching renderDoc is therefore HTML
+ * (or near enough — the subset parser treats plain text as a one-paragraph body).
+ *
+ * Both paths need the network straddle (the HTTP client lives in
+ * conditional/spangap-net/, #if CONFIG_SPANGAP_NET); the loopback case also needs
+ * the web server up, which is the normal case for any build with the viewer. */
 static bool loadUrl(const std::string& url, std::string& out, std::string& finalUrl) {
     finalUrl = url;
-    if (url == "welcome") { out = mdToHtml(WELCOME_MD); return true; }
-    if (url == "about")   { out = mdToHtml(ABOUT_MD);   return true; }
+    bool external = (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0);
 
-    if (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0) {
+    std::string fetchUrl;
+    if (external) {
+        fetchUrl = url;
+    } else {                                   /* file:// or bare path → localhost */
+        std::string path = url.rfind("file://", 0) == 0 ? url.substr(7) : url;
+        if (path.empty() || path[0] != '/') path = "/" + path;
+        fetchUrl = "http://127.0.0.1" + path;
+    }
+
 #if CONFIG_SPANGAP_NET
-        std::string body, ctype;
-        if (!viewerFetch(url, body, ctype, finalUrl)) {
-            out = "<h2>Fetch failed</h2><p><code>" + url + "</code></p>";
-            return false;
-        }
-        out = sniffMd(finalUrl, body, ctype) ? mdToHtml(body) : body;
-        return true;
-#else
-        out = "<h2>Not supported in this build</h2><p>http(s) needs the network "
-              "straddle (<code>spangap-net</code>). <code>file://</code> only.</p>";
-        return false;
-#endif
-    }
-
-    std::string path = url.rfind("file://", 0) == 0 ? url.substr(7) : url;
-    struct stat st;
-    if (fs_stat(path.c_str(), &st) != 0) {
-        out = "<h2>Not found</h2><p><code>" + path + "</code></p>";
+    std::string body, ctype, redir;
+    if (!viewerFetch(fetchUrl, body, ctype, redir)) {
+        out = "<h2>Load failed</h2><p><code>" + url + "</code></p>";
         return false;
     }
-    size_t n = (size_t)st.st_size;
-    if (n > VIEWER_MAX_BYTES) n = VIEWER_MAX_BYTES;   /* bound PSRAM use */
-    std::string buf;
-    buf.resize(n);
-    int f = fs_open(path.c_str(), "rb");
-    if (f < 0) { out = "<h2>Cannot open</h2><p><code>" + path + "</code></p>"; return false; }
-    size_t got = fs_read(&buf[0], 1, n, f);
-    fs_close(f);
-    buf.resize(got);
-
-    out = sniffMd(url, buf, "") ? mdToHtml(buf) : buf;
+    out = body;
+    /* For local docs keep the original bare/file:// URL so relative links resolve
+     * back to local paths (and re-fetch via localhost); for external, follow the
+     * post-redirect URL. */
+    finalUrl = external ? redir : url;
     return true;
+#else
+    out = "<h2>Not supported in this build</h2><p>The viewer needs the network "
+          "straddle (<code>spangap-net</code>) to fetch documents.</p>";
+    return false;
+#endif
 }
 
 /* ─────────────── IR → LVGL (lcd task) ─────────────── */
@@ -655,8 +615,9 @@ static void renderDoc(void) {
     lv_obj_clean(s_page);
     s_linkHrefs.clear();
 
-    /* Title bar: full window width, grey, centered text. A child of the scroll
-     * container, so it scrolls away with the content. */
+    /* Title bar: full-width grey, centered, word-wrapped (greedy — LVGL has no
+     * balanced wrap). A child of the scroll container, so it scrolls away with
+     * the content rather than staying stuck at the top. */
     if (!title.empty()) {
         lv_obj_t* bar = lv_obj_create(s_page);
         lv_obj_remove_style_all(bar);
@@ -677,8 +638,7 @@ static void renderDoc(void) {
         lv_label_set_text(t, title.c_str());
     }
 
-    /* Content column: padded so body text isn't against the window edges (the
-     * title bar above is the only full-bleed element). */
+    /* Content column: padded so body text isn't against the window edges. */
     lv_obj_t* col = lv_obj_create(s_page);
     lv_obj_remove_style_all(col);
     lv_obj_set_width(col, lv_pct(100));
@@ -730,10 +690,10 @@ static void renderDoc(void) {
 
 /* ─────────────── nav worker (off the lcd task) ─────────────── */
 
-static void requestNav(const std::string& url) {
+static void requestNav(const std::string& url, bool retry) {
     if (url.empty()) return;
     xSemaphoreTake(s_mux, portMAX_DELAY);
-    s_reqUrl = url; s_reqPending = true; s_reqIsBack = false;
+    s_reqUrl = url; s_reqPending = true; s_reqIsBack = false; s_reqRetry = retry;
     xSemaphoreGive(s_mux);
     if (s_worker) xTaskNotifyGive(s_worker);
 }
@@ -743,25 +703,29 @@ static void requestBack(void) {
     have = !s_history.empty();
     if (have) {
         s_reqUrl = s_history.back(); s_history.pop_back();
-        s_reqPending = true; s_reqIsBack = true;
+        s_reqPending = true; s_reqIsBack = true; s_reqRetry = false;
     }
     xSemaphoreGive(s_mux);
     if (have && s_worker) xTaskNotifyGive(s_worker);
 }
 
 static void navRenderCb(void*) {
+    /* Show FIRST (builds the layer + s_page on the first open), THEN render.
+     * s_navInitiatedShow tells the show callback this open is ours, so it doesn't
+     * bounce a programmatic open back to the home page. */
+    s_navInitiatedShow = true;
+    lcdShowProgram("Info");
     if (s_page) renderDoc();
-    lcdShowProgram("Viewer");
 }
 
 static void viewerWorker(void*) {
     info("nav worker up");
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        std::string url, cur; bool isBack;
+        std::string url, cur; bool isBack, retry;
         xSemaphoreTake(s_mux, portMAX_DELAY);
         if (!s_reqPending) { xSemaphoreGive(s_mux); continue; }
-        url = s_reqUrl; isBack = s_reqIsBack; s_reqPending = false; cur = s_url;
+        url = s_reqUrl; isBack = s_reqIsBack; retry = s_reqRetry; s_reqPending = false; cur = s_url;
         xSemaphoreGive(s_mux);
 
         if (!isBack && !cur.empty() && cur != url) {
@@ -772,7 +736,14 @@ static void viewerWorker(void*) {
         }
 
         std::string html, finalUrl;
-        loadUrl(url, html, finalUrl);     /* error pages are still rendered */
+        bool ok = loadUrl(url, html, finalUrl);   /* error pages are still rendered */
+        /* Boot retry: at startup the local web server may not be listening yet,
+         * so a loopback fetch fails. Retry a few times before giving up (only the
+         * boot nav sets retry, so a user's 404 isn't delayed). */
+        for (int i = 0; !ok && retry && i < 6; i++) {
+            vTaskDelay(pdMS_TO_TICKS(800));
+            ok = loadUrl(url, html, finalUrl);
+        }
         xSemaphoreTake(s_mux, portMAX_DELAY); s_html = html; s_url = finalUrl; xSemaphoreGive(s_mux);
         storageSet("viewer.lcd.url", finalUrl.c_str());
         lcdRun(navRenderCb, nullptr);
@@ -783,42 +754,89 @@ static void viewerWorker(void*) {
 
 static void backClicked(lv_event_t*) { requestBack(); }
 
-/* Tapping the URL field starts editing it. It's added to the shared keypad group
- * at build; -lcd saves/restores per-program focus across show/hide, so the viewer
- * needs to release nothing on leave. */
-static void urlbarFocusCb(lv_event_t*) {
+/* The address bar (back + URL field) is hidden until Space is pressed in the
+ * page, then focused for editing; it disappears again on Enter, on losing focus,
+ * or on a tap in the page. */
+static void showAddrBar(bool on) {
+    if (!s_bar) return;
+    if (on) {
+        lv_obj_remove_flag(s_bar, LV_OBJ_FLAG_HIDDEN);
+        if (s_urlbar && lcdInputGroup()) {
+            lv_group_focus_obj(s_urlbar);
+            lv_group_set_editing(lcdInputGroup(), true);
+        }
+    } else {
+        lv_obj_add_flag(s_bar, LV_OBJ_FLAG_HIDDEN);
+        if (s_page && lcdInputGroup()) lv_group_focus_obj(s_page);  /* keys back to the page */
+    }
+}
+
+static void urlbarFocusCb(lv_event_t*) {                 /* tap the field → edit it */
     if (!s_urlbar || !lcdInputGroup()) return;
     lv_group_focus_obj(s_urlbar);
     lv_group_set_editing(lcdInputGroup(), true);
 }
-static void urlbarReady(lv_event_t*) {
+static void urlbarReady(lv_event_t*) {                   /* Enter → navigate, hide bar */
     if (!s_urlbar) return;
     const char* t = lv_textarea_get_text(s_urlbar);
-    if (t && *t) requestNav(t);
+    std::string u = t ? t : "";
+    showAddrBar(false);
+    if (!u.empty()) requestNav(u);
 }
+static void urlbarDefocus(lv_event_t*) {                 /* lost focus → hide bar */
+    if (s_bar && !lv_obj_has_flag(s_bar, LV_OBJ_FLAG_HIDDEN)) showAddrBar(false);
+}
+
+/* The page is a focusable group member so the keyboard reaches it while reading:
+ * Space reveals the address bar; Up/Down scroll. */
+static void pageKeyCb(lv_event_t* e) {
+    uint32_t key = lv_event_get_key(e);
+    if (key == ' ')          showAddrBar(true);
+    else if (key == LV_KEY_UP)   lv_obj_scroll_by(s_page, 0,  40, LV_ANIM_ON);
+    else if (key == LV_KEY_DOWN) lv_obj_scroll_by(s_page, 0, -40, LV_ANIM_ON);
+}
+static void pageClickCb(lv_event_t*) { showAddrBar(false); }  /* tap in page hides the bar */
 
 static void viewerApp(void* arg) {
     lv_obj_t* layer = (lv_obj_t*)arg;
-    if (s_page) { renderDoc(); return; }   /* re-open: layer kept */
+    if (s_page) return;   /* re-open: layer kept; the show/nav path renders */
 
     lv_obj_set_flex_flow(layer, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(layer, 0, 0);
     lv_obj_set_style_pad_row(layer, 0, 0);
 
-    if (storageGetInt("s.viewer.urlbar", 0)) {
-        s_urlbar = lv_textarea_create(layer);
-        lv_textarea_set_one_line(s_urlbar, true);
-        lv_textarea_set_placeholder_text(s_urlbar, "file:// or http(s):// …");
-        lv_obj_set_width(s_urlbar, lv_pct(100));
-        lv_obj_set_style_text_font(s_urlbar, MONO_FONT, 0);
-        /* Added to the shared keypad group; -lcd saves/restores focus per program
-         * across show/hide, so the viewer need not release it on leave. Focused
-         * only on tap (urlbarFocusCb) so opening the viewer to read doesn't grab
-         * the keyboard. */
-        if (lcdInputGroup()) lv_group_add_obj(lcdInputGroup(), s_urlbar);
-        lv_obj_add_event_cb(s_urlbar, urlbarFocusCb, LV_EVENT_CLICKED, nullptr);
-        lv_obj_add_event_cb(s_urlbar, urlbarReady,   LV_EVENT_READY,   nullptr);
-    }
+    /* Address bar row: [Back][URL field], hidden until Space. Both join the
+     * shared keypad group (skipped while hidden); -lcd saves/restores per-program
+     * focus across show/hide, so nothing is released on leave. */
+    s_bar = lv_obj_create(layer);
+    lv_obj_remove_style_all(s_bar);
+    lv_obj_set_width(s_bar, lv_pct(100));
+    lv_obj_set_height(s_bar, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(s_bar, 3, 0);
+    lv_obj_set_style_pad_column(s_bar, 4, 0);
+    lv_obj_set_style_bg_color(s_bar, lv_color_hex(0xececec), 0);
+    lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_bar, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t* back = lv_button_create(s_bar);
+    lv_obj_set_style_pad_all(back, 4, 0);
+    lv_obj_add_event_cb(back, backClicked, LV_EVENT_CLICKED, nullptr);
+    if (lcdInputGroup()) lv_group_add_obj(lcdInputGroup(), back);
+    lv_obj_t* bl = lv_label_create(back);
+    lv_obj_set_style_text_font(bl, BODY_FONT, 0);   /* 12_latin carries LV_SYMBOL_* */
+    lv_label_set_text(bl, LV_SYMBOL_LEFT);
+
+    s_urlbar = lv_textarea_create(s_bar);
+    lv_textarea_set_one_line(s_urlbar, true);
+    lv_textarea_set_placeholder_text(s_urlbar, "path or http(s):// …");
+    lv_obj_set_flex_grow(s_urlbar, 1);
+    lv_obj_set_style_text_font(s_urlbar, MONO_FONT, 0);
+    if (lcdInputGroup()) lv_group_add_obj(lcdInputGroup(), s_urlbar);
+    lv_obj_add_event_cb(s_urlbar, urlbarFocusCb, LV_EVENT_CLICKED,   nullptr);
+    lv_obj_add_event_cb(s_urlbar, urlbarReady,   LV_EVENT_READY,     nullptr);
+    lv_obj_add_event_cb(s_urlbar, urlbarDefocus, LV_EVENT_DEFOCUSED, nullptr);
 
     s_page = lv_obj_create(layer);
     lv_obj_set_width(s_page, lv_pct(100));
@@ -827,27 +845,26 @@ static void viewerApp(void* arg) {
     lv_obj_set_style_bg_opa(s_page, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_page, 0, 0);
     lv_obj_set_style_radius(s_page, 0, 0);
-    lv_obj_set_style_pad_all(s_page, 0, 0);   /* full-bleed: title bar spans width; col pads the body */
+    lv_obj_set_style_pad_all(s_page, 0, 0);   /* col pads the body; page is full-bleed */
     lv_obj_set_style_pad_row(s_page, 0, 0);
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(s_page, LV_DIR_VER);
+    /* Focusable so the keyboard reaches it (Space → address bar, arrows → scroll);
+     * default-focused so a freshly-opened viewer reads keys without a tap. */
+    lv_obj_add_flag(s_page, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_page, pageKeyCb,   LV_EVENT_KEY,     nullptr);
+    lv_obj_add_event_cb(s_page, pageClickCb, LV_EVENT_CLICKED, nullptr);
+    if (lcdInputGroup()) { lv_group_add_obj(lcdInputGroup(), s_page); lv_group_focus_obj(s_page); }
+}
 
-    /* floating Back button (history), bottom-left, above the page */
-    lv_obj_t* back = lv_button_create(layer);
-    lv_obj_add_flag(back, LV_OBJ_FLAG_FLOATING);
-    lv_obj_set_size(back, 30, 30);
-    lv_obj_align(back, LV_ALIGN_BOTTOM_LEFT, 6, -6);
-    lv_obj_set_style_bg_color(back, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(back, LV_OPA_70, 0);
-    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(back, backClicked, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t* bl = lv_label_create(back);
-    lv_obj_set_style_text_font(bl, BODY_FONT, 0);   /* 12_latin carries LV_SYMBOL_* */
-    lv_obj_set_style_text_color(bl, lv_color_black(), 0);
-    lv_label_set_text(bl, LV_SYMBOL_LEFT);
-    lv_obj_center(bl);
-
-    renderDoc();
+/* Per-program show callback (lcdRegister's onShow): a MANUAL open (tile tap)
+ * navigates to the configured home page; a programmatic open (lcdview / link /
+ * boot) sets s_navInitiatedShow first, so we leave its target alone. */
+static void viewerOnShow(void*) {
+    if (s_navInitiatedShow) { s_navInitiatedShow = false; return; }
+    std::string home = storageGetStr("s.viewer.home_lcd", "");
+    if (home.empty()) home = "/WELCOME.md";   /* fallback so a manual open isn't blank */
+    requestNav(home);
 }
 
 /* ─────────────── CLI + Settings ─────────────── */
@@ -855,14 +872,14 @@ static void viewerApp(void* arg) {
 static void cliViewer(const char* args) {
     if (args && cliWantsHelp(args)) {
         cliPrintf("%-*s show current location\n", CLI_HELP_COL, "lcdview");
-        cliPrintf("%-*s open a document on the LCD (file://, http(s)://, or a path)\n",
+        cliPrintf("%-*s open a document on the LCD (a path, file://, or http(s)://)\n",
                   CLI_HELP_COL, "lcdview <url>");
         return;
     }
     if (!args || !*args) {
         std::string u;
         xSemaphoreTake(s_mux, portMAX_DELAY); u = s_url; xSemaphoreGive(s_mux);
-        cliPrintf("location: %s\n", u.c_str());
+        cliPrintf("location: %s\n", u.empty() ? "-" : u.c_str());
         return;
     }
     requestNav(args);
@@ -872,10 +889,8 @@ static void cliViewer(const char* args) {
 static void viewerSettings(void* arg) {
     lv_obj_t* p = (lv_obj_t*)arg;
     lcdSettingSection(p, "Viewer");
-    lcdSettingSwitch (p, "Address bar", "s.viewer.urlbar");
-    lcdSettingCaption(p, "Show a URL entry field at the top of the viewer "
-                         "(takes effect next time it is opened).");
-    lcdSettingValue  (p, "Location",    "viewer.lcd.url");
+    lcdSettingCaption(p, "Press Space in the viewer to show the address bar.");
+    lcdSettingValue  (p, "Location", "viewer.lcd.url");
 }
 
 /* ─────────────── init ─────────────── */
@@ -885,16 +900,25 @@ static void viewerSettings(void* arg) {
  * without lcd staged the hook is never called (viewerInit stays a no-op). */
 void viewerLcdRegister(void) {
     s_mux = xSemaphoreCreateMutex();
-    storageDefault("s.viewer.urlbar", 0);
 
-    std::string html = mdToHtml(WELCOME_MD);
-    xSemaphoreTake(s_mux, portMAX_DELAY); s_html = html; s_url = "welcome"; xSemaphoreGive(s_mux);
-    storageSet("viewer.lcd.url", "welcome");
-
-    /* generous stack: the worker runs the TLS handshake (mbedtls) for http(s). */
+    /* generous stack: the worker runs the TLS handshake (mbedtls) for external
+     * https; localhost fetches are plain HTTP. */
     s_worker = spawnTask(viewerWorker, "viewer", 24576, nullptr, 1, 1, STACK_PSRAM);
     cliRegisterCmd("lcdview", cliViewer);   /* LCD viewer; the web counterpart is `webview` */
-    lcdRegister("Viewer", "viewer", viewerApp);
+    /* "Info" tile + red ? icon; viewerOnShow sends a manual launch to home_lcd.
+     * The show callback rides in lcdRegister so it's set atomically with the entry
+     * on the lcd task (a separate setter would race the queued registration). */
+    lcdRegister("Info", "viewer", viewerApp, viewerOnShow);
     lcdRegisterSettings("Viewer", "Viewer", viewerSettings);
+
+    /* Boot start: ONLY a one-shot once_lcd auto-opens the viewer (then it's
+     * consumed) — e.g. to show a CHANGELOG after an update. Otherwise the device
+     * lands on the launcher; home_lcd is just where a manual launch goes. */
+    std::string once = storageGetStr("s.viewer.once_lcd", "");
+    if (!once.empty()) {
+        storageSet("s.viewer.once_lcd", "");
+        requestNav(once, true);   /* retry: the web server may still be coming up */
+    }
+
     info("registered");
 }

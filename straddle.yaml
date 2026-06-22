@@ -10,9 +10,14 @@
 # browser-side viewer window pops open); the LCD viewer + `lcdview` verb live in
 # the when:-gated viewerLcdRegister hook.
 #
-# Browser side (browser/): a "Window → Viewer" floating window that renders LOCAL
-# Markdown (browser fonts) / HTML (passthrough); http(s) links open in a new tab
-# (no device proxy — would need APSTA).
+# Markdown→HTML is done server-side: conditional/spangap-web/ registers a .md
+# file-extension transform with the web server (viewerWebRegister, gated on
+# spangap-web), so *.md / *.md.gz are converted on-device and served as
+# text/html. The welcome/about help pages ship as data/webroot/{WELCOME,ABOUT}.md.
+#
+# Browser side (browser/): a "Window → Viewer" floating window that loads a URL
+# straight into an <iframe> from the device's web server (same origin → cookies,
+# images, links all work; .md arrives pre-rendered as HTML).
 #
 # Config: s.viewer.urlbar (bool)
 schema_version: 1
@@ -32,6 +37,11 @@ init:
   - call: viewerInit
   - call: viewerLcdRegister
     when: spangap/spangap-lcd
+  # Markdown→HTML now happens server-side: register the .md transform with the
+  # web server. Gated on spangap-web (NOT spangap-lcd), so it runs on headless
+  # builds too — the LCD viewer fetches the converted HTML from localhost.
+  - call: viewerWebRegister
+    when: spangap/spangap-web
 # Browser auto-registration: adds the "Window → Viewer" entry and subscribes to
 # viewer.web.url. The buildable's MainLayout also mounts ViewerWindow (parallel
 # to NomadWindow/MapWindow).

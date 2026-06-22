@@ -1,91 +1,109 @@
 # viewer
 
-A micro HTML/Markdown document viewer for spangap devices, with two front ends:
+## What is this?
 
-- **LCD** — renders a growing subset of HTML, and Markdown (converted to HTML
-  on-device via vendored [MD4C](https://github.com/mity/md4c)), into LVGL.
-- **Web UI** — a "Window → Viewer" floating window that renders **local**
-  Markdown/HTML in the browser.
+A micro HTML/Markdown **document viewer** for spangap devices — the platform's
+README / help / CHANGELOG reader. Named **viewer** (not "browser") to avoid
+confusion with the user's web browser. Two front ends, one behaviour:
 
-Named **viewer** (not "browser") to avoid confusion with the user's web browser.
-Owns the `viewer` / `s.viewer` config trees.
+- **LCD** — an "Info" launcher program (red **?** icon) that renders a safe
+  subset of HTML into LVGL.
+- **Web UI** — a "Window → Viewer" floating window that loads a URL into an
+  `<iframe>`, served by the device's own web server.
 
-## LCD viewer
+Markdown is converted to HTML **on the device's web server**, so both front ends
+just consume HTML. A bare path / `file://` is a local document (the LCD fetches
+it over loopback; the web iframe loads it same-origin); `http(s)://` is fetched
+directly. There is no http(s) proxy.
 
-```
-bytes ──(.md? MD4C)──► HTML ──subset parser──► IR (blocks + runs) ──► LVGL
-```
+Owns the `viewer` / `s.viewer` config trees and the `lcdview` / `webview` verbs.
 
-The **IR** (a small render-oriented tree of blocks + styled inline runs) is the
-spine: both Markdown and HTML lower into it, so adding markup is "one block/flag
-+ one renderer case". The parser is a strict **allow-list** — rendered tags are
-handled, structural containers (`div/span/section/table/…`) flow their content
-through, void tags are ignored, and **everything else (script/style/svg/forms/
-unknown) has its content dropped** — so we only ever render markup we understand,
-and it doubles as the sanitizer.
+## What this straddle owns
 
-Each page shows a full-width grey **title bar** (`<title>`, else first heading,
-else the URL), centered, that scrolls with the content. Emphasis is by **colour
-on proportional faces** (no bold/italic font blobs): body = dark grey,
-**bold** = black, *italic* = light grey; `code` uses the platform mono font;
-headings use the larger `montserrat_16_latin`. Background is white. Fonts are
-owned/published by `spangap-lcd`.
+- `esp-idf/src/viewer.cpp` — the always-compiled `webview` verb + `s.viewer.*`
+  defaults (`viewerInit`).
+- `esp-idf/conditional/spangap-lcd/` — the whole LCD viewer (`viewerLcdRegister`).
+- `esp-idf/conditional/spangap-web/` — the Markdown→HTML transform registered with
+  the web server (`viewerWebRegister`).
+- `esp-idf/conditional/spangap-net/` — the http(s) GET client (`viewerFetch`).
+- `esp-idf/md4c/` — vendored [MD4C](https://github.com/mity/md4c) (Markdown→HTML).
+- `browser/` — the `<ViewerWindow>` Vue panel + `registerViewer` activator.
+- `data/webroot/{WELCOME,ABOUT}.md` — the built-in help pages, shipped into
+  `/fixed/webroot/`.
 
-Links are tappable (history + a floating **<** Back button + relative-URL
-resolution). I/O runs off the lcd task: a **nav worker** does file/http loads
-(which block) and hands the render back to the lcd task, so the UI never blocks
-on disk or the network. Hard caps bound input/IR/widget count so a huge page
-can't exhaust PSRAM (oversize content is truncated with a notice).
+## How others use it
 
-Lives in conditional slices:
-`esp-idf/conditional/spangap-lcd/src/viewer_lcd.cpp` (the whole LCD viewer, via
-the `when:`-gated `viewerLcdRegister` hook) and
-`esp-idf/conditional/spangap-net/src/fetch.cpp` (http(s) GET, only when
-`spangap-net` is staged; `#if CONFIG_SPANGAP_NET`-gated).
-
-### CLI: `lcdview`
+### CLI verbs
 
 ```
-lcdview /sdcard/readme.md         # Markdown on the LCD
-lcdview file:///sdcard/help.html  # HTML
-lcdview https://example.com/      # needs spangap-net (device fetches over STA)
+lcdview <url>     # open a document on the LCD  (a path, file://, or http(s)://)
+webview <path>    # open a document in the web Viewer window
 ```
 
-Open the **Viewer** launcher icon (globe) for the built-in welcome page. Enable
-**Settings → Viewer → Address bar** (`s.viewer.urlbar`) for an in-app URL field.
+`webview` is always compiled (LCD-independent); it just sets the ephemeral key
+`viewer.web.url`, which the browser module watches.
 
-## Web viewer
+### Opening it by hand
 
-`browser/` adds a **Window → Viewer** floating window (Vue). It renders **local**
-files fetched from the device's web server (the `/sdcard` and `/state` WebDAV
-roots): Markdown → the same subset, with the browser's fonts; HTML → passed
-through in a sandboxed iframe. Markdown links to `http(s)` get `target="_blank"`
-and open in the user's own browser tab.
+- **LCD**: tap the **Info** tile → goes to `s.viewer.home_lcd` (else the welcome
+  page). Press **Space** in the page to reveal the address bar (Back + URL).
+- **Web**: **Window → Viewer** → goes to `s.viewer.home_web` (else the welcome
+  page). Press **Space** to reveal the address bar.
 
-It does **not** proxy http(s): a device-side reverse proxy would need AP+STA
-(APSTA), which isn't implemented — so remote pages are handed to the real
-browser instead.
-
-### CLI: `webview`
-
-```
-webview /sdcard/readme.md   # pops the web Viewer window open on that local file
-```
-
-`webview` (always compiled, LCD-independent) just sets the ephemeral key
-`viewer.web.url`; the browser module subscribes and opens the window.
-
-## Config
+### Start-up & config (`s.viewer.*`, URLs, all unset by default)
 
 | key | meaning |
 |-----|---------|
-| `s.viewer.urlbar` | show the LCD viewer's in-app address bar |
-| `viewer.lcd.url`  | ephemeral — current LCD location |
-| `viewer.web.url`  | ephemeral — set by `webview`; opens the web window |
+| `once_{lcd,web}` | **one-shot**: auto-opens the viewer once on the next boot / page load, then is consumed. The ONLY thing that auto-opens — how a build surfaces a `CHANGELOG.md` after an update. Otherwise the device lands on the launcher (LCD) / no window (web). |
+| `home_{lcd,web}` | where a **manual** launch goes (Info tile / Window menu). Falls back to `/WELCOME.md`. |
+| `viewer.lcd.url` | ephemeral — the current LCD location. |
+| `viewer.web.url` | ephemeral — set by `webview`; the browser opens the window on it. |
 
-## Not handled (yet)
+### Shipping a help document
 
-Images, tables (table text flows, unstyled), and viewport virtualization for very
-large documents (capped instead).
+Put a `*.md` (or `*.md.gz`) anywhere under `/fixed` or `/sdcard` and open it by
+URL. To bundle one into the firmware image, drop it in a straddle's
+`esp-idf/data/webroot/` and add `data/` to `SPANGAP_EXTRA_DATA_DIRS` from a
+`project_include.cmake` (as this straddle does). To push it to existing users
+after an update, set `s.viewer.once_{lcd,web}` to its URL.
 
-See [`/straddles/plans/viewer-straddle-html-md-renderer.md`](../plans/viewer-straddle-html-md-renderer.md) for the design history.
+### Firmware integration hooks
+
+`esp-idf/include/viewer.h` declares the three `init:` hooks the generated
+dispatcher calls — you never call them yourself; staging the straddle wires them:
+
+- `viewerInit()` — always.
+- `viewerLcdRegister()` — `when: spangap/spangap-lcd`.
+- `viewerWebRegister()` — `when: spangap/spangap-web`.
+
+### Browser integration
+
+`browser/src/modules/viewer.ts` exports the `registerViewer` activator (a
+`browser_register:` hook — adds the Window-menu entry and the start-up watcher)
+and the refs the buildable's `MainLayout` binds to `<ViewerWindow>`:
+`viewerWebVisible`, `viewerWebFocus` (raise nonce), `viewerWebUrl`, plus
+`showViewer()`.
+
+## Dependencies
+
+- **spangap-core** (implicit) — storage, CLI, fs.
+- **spangap-net** (soft) — the http(s) client lives in `conditional/spangap-net/`,
+  `#if CONFIG_SPANGAP_NET`-gated. Without it the LCD can't fetch anything.
+- **spangap-web** (soft) — the Markdown transform + document serving live in
+  `conditional/spangap-web/`. The LCD's local-document path fetches from this
+  server over loopback.
+- **spangap-lcd** (soft) — the LCD front end lives in `conditional/spangap-lcd/`.
+
+## What it does NOT do
+
+- No http(s) **proxy** — a device reverse-proxy needs AP+STA (APSTA), shelved.
+  The web iframe loads cross-origin URLs directly (subject to the remote's
+  framing policy).
+- LCD rendering omits images, styled tables (text flows unstyled), and viewport
+  virtualization (large documents are capped, not virtualized).
+
+## Read next
+
+[`INTERNALS.md`](INTERNALS.md) — the render pipeline, server-side conversion,
+loopback fetch, threading, start-up logic, and the `/fixed` merge. Design history
+in [`/straddles/plans/viewer-straddle-html-md-renderer.md`](../plans/viewer-straddle-html-md-renderer.md).

@@ -31,4 +31,13 @@ static void cliWebview(const char* args) {
 
 void viewerInit(void) {
     cliRegisterCmd("webview", cliWebview);
+
+    /* Start-up locations (URLs, both front ends), all UNSET by default:
+     *   once_{lcd,web} — a one-shot: auto-opens the viewer once on the next boot /
+     *                    page load, then is consumed (e.g. a CHANGELOG after an
+     *                    update). This is the ONLY thing that auto-opens — out of
+     *                    the box the device lands on the launcher / closed window.
+     *   home_{lcd,web} — where the viewer goes when launched manually (tile tap /
+     *                    Window menu); falls back to the welcome page if unset.
+     * Nothing is defaulted — absent = nothing to show / fall back to welcome. */
 }
