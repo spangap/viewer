@@ -36,6 +36,7 @@
 #include "spangap.h"      /* cli.h / log.h / storage.h / spawnTask */
 #include "mem.h"          /* STACK_PSRAM */
 #include "lcd.h"          /* pulls in lvgl.h; fonts */
+#include "lcd_app.h"      /* LcdApp + lcdInstall */
 #include "fs.h"
 #include "storage.h"
 
@@ -867,6 +868,18 @@ static void viewerOnShow(void*) {
     requestNav(home);
 }
 
+/* ViewerApp — onCreate builds the page + address bar once; onShow runs the
+ * manual-launch home navigation; onClose nulls the widget handles so the next
+ * open rebuilds (viewerApp's "if (s_page) return" reopen guard depends on s_page
+ * being null after the layer is freed). */
+class ViewerApp : public LcdApp {
+public:
+    ViewerApp() : LcdApp({ .name = "Info", .iconBasename = "viewer" }) {}
+    void onCreate(lv_obj_t* root) override { viewerApp(root); }
+    void onShow() override { viewerOnShow(nullptr); }
+    void onClose() override { s_page = nullptr; s_bar = nullptr; s_urlbar = nullptr; s_linkHrefs.clear(); }
+};
+
 /* ─────────────── CLI + Settings ─────────────── */
 
 static void cliViewer(const char* args) {
@@ -908,7 +921,7 @@ void viewerLcdRegister(void) {
     /* "Info" tile + red ? icon; viewerOnShow sends a manual launch to home_lcd.
      * The show callback rides in lcdRegister so it's set atomically with the entry
      * on the lcd task (a separate setter would race the queued registration). */
-    lcdRegister("Info", "viewer", viewerApp, viewerOnShow);
+    lcdRun([](void*) { lcdInstall(new ViewerApp()); });   /* tile build is LVGL: on the lcd task */
     lcdRegisterSettings("Viewer", "Viewer", viewerSettings);
 
     /* Boot start: ONLY a one-shot once_lcd auto-opens the viewer (then it's
