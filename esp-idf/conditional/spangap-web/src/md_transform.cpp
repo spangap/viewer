@@ -29,9 +29,9 @@
 #include <cstring>
 
 /* Document chrome wrapped around MD4C's HTML fragment: charset, a <title> (so
- * the viewer's window/status bar can adopt the page title), and the same
- * lightweight typographic CSS the web viewer used to apply client-side. The
- * LCD's HTML subset parser ignores <head>/<style> and renders the body. */
+ * the viewer's window/status bar can adopt the page title), and the web viewer's
+ * lightweight typographic CSS. The LCD's HTML subset parser ignores
+ * <head>/<style> and renders the body. */
 static const char* DOC_HEAD_1 =
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"

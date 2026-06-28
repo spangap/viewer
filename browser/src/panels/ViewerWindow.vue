@@ -1,11 +1,10 @@
-<!-- Viewer window (Window → Viewer). Loads a URL straight into an <iframe>: the
-     device's web server serves the document (Markdown is converted to HTML
+<!-- Viewer window (the "Viewer" Dock app). Loads a URL straight into an <iframe>:
+     the device's web server serves the document (Markdown is converted to HTML
      server-side, so .md arrives as text/html), and the browser renders it,
      fetching same-origin images and following links itself. Because the frame
      runs at the device's own origin, the session cookie rides along — admin-
      gated paths (/sdcard, /state) load. http(s) URLs are loaded in the frame
-     too (no _blank hand-off); cross-origin sites that forbid framing are the
-     browser's call.
+     too; cross-origin sites that forbid framing are the browser's call.
 
      The address bar (Back + URL) is hidden while reading; press Space to reveal
      and focus it, click anywhere in the page (or Esc) to hide it again. -->

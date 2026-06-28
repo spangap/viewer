@@ -1,21 +1,21 @@
 /**
  * viewer — browser-side document viewer (SPA side).
  *
- * A floating window (Window → Viewer) that loads a URL into an <iframe> served by
- * the device's web server (Markdown is converted to HTML server-side). It runs at
- * the device origin, so same-origin images/links/cookies work.
+ * A floating window (the "Viewer" Dock app) that loads a URL into an <iframe>
+ * served by the device's web server (Markdown is converted to HTML server-side).
+ * It runs at the device origin, so same-origin images/links/cookies work.
  *
  * Start-up (mirrors the LCD), driven by device config (see firmware viewer.cpp):
  *   - on the first storage sync, a one-shot `s.viewer.once_web` opens the window
  *     (then is consumed) and is raised on top, after any windows the SPA restored
  *     from localStorage. That one-shot is the ONLY thing that auto-opens.
- *   - opening it from the Window menu (a manual launch) goes to `home_web`.
+ *   - opening it from the Dock (a manual launch) goes to `home_web`.
  *   - the device CLI verb `webview <path>` (ephemeral `viewer.web.url`) opens that
  *     exact path.
  */
 import { ref, watch } from 'vue'
 import { useDeviceStore } from 'spangap-browser/stores/device'
-import { useMenuStore } from 'spangap-browser/stores/menu'
+import { registerApp } from 'spangap-browser/lib/apps'
 
 /* Window visibility + focus nonce — MainLayout binds these to the window. */
 export const viewerWebVisible = ref(false)
@@ -43,7 +43,7 @@ function raise() {
   setTimeout(() => { if (viewerWebVisible.value) viewerWebFocus.value++ }, 150)
 }
 
-/** Menu action: a manual launch opens the window on its home page (only when it
+/** Dock action: a manual launch opens the window on its home page (only when it
  *  wasn't already open, so re-selecting it just re-focuses). */
 export function showViewer() {
   if (!viewerWebVisible.value) viewerWebUrl.value = homeWeb(useDeviceStore())
@@ -51,12 +51,11 @@ export function showViewer() {
 }
 
 export function registerViewer() {
-  const menu = useMenuStore()
   const device = useDeviceStore()
 
-  /* Join the existing "Window" menu (alongside CLI / System Log). */
-  menu.setMenu('window', { label: 'Window' })
-  menu.register('window/viewer', 'Viewer', { type: 'action', action: showViewer })
+  /* Dock app — opens the document viewer window on its home page. */
+  registerApp({ id: 'viewer', label: 'Viewer', icon: 'viewer', placement: 7,
+                open: showViewer, isOpen: () => viewerWebVisible.value })
 
   /* `webview <path>` on the device sets ephemeral viewer.web.url → open it. */
   watch(() => device.get('viewer.web.url'), (u) => {

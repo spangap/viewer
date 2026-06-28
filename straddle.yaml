@@ -15,11 +15,13 @@
 # spangap-web), so *.md / *.md.gz are converted on-device and served as
 # text/html. The welcome/about help pages ship as data/webroot/{WELCOME,ABOUT}.md.
 #
-# Browser side (browser/): a "Window → Viewer" floating window that loads a URL
-# straight into an <iframe> from the device's web server (same origin → cookies,
-# images, links all work; .md arrives pre-rendered as HTML).
+# Browser side (browser/): a "Viewer" Dock app — a floating window that loads a
+# URL straight into an <iframe> from the device's web server (same origin →
+# cookies, images, links all work; .md arrives pre-rendered as HTML).
 #
-# Config: s.viewer.urlbar (bool)
+# Config (s.viewer.*, all unset by default): once_lcd / once_web one-shot auto-open
+# (consumed after firing); home_lcd / home_web where a manual launch goes (falls
+# back to the welcome page).
 schema_version: 1
 name: spangap/viewer
 prefix: viewer
@@ -42,8 +44,8 @@ init:
   # builds too — the LCD viewer fetches the converted HTML from localhost.
   - call: viewerWebRegister
     when: spangap/spangap-web
-# Browser auto-registration: adds the "Window → Viewer" entry and subscribes to
-# viewer.web.url. The buildable's MainLayout also mounts ViewerWindow (parallel
-# to NomadWindow/MapWindow).
+# Browser auto-registration: adds the "Viewer" Dock app (registerApp) and
+# subscribes to viewer.web.url. The buildable's MainLayout also mounts
+# ViewerWindow (parallel to NomadWindow/MapWindow).
 browser_register:
   - call: registerViewer

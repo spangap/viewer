@@ -10,14 +10,15 @@
 #ifndef SPANGAP_VIEWER_H
 #define SPANGAP_VIEWER_H
 
-/** Normal init hook (init: viewerInit). No-op: all work is the LCD viewer,
- *  registered by viewerLcdRegister. Kept so the dispatcher always has a hook. */
+/** Normal init hook (init: viewerInit), always compiled. Registers the `webview`
+ *  CLI verb (sets the ephemeral viewer.web.url that the browser-side window
+ *  watches); LCD-independent, so it works on any build with the web UI. */
 void viewerInit(void);
 
 /** LCD slice registration — the when:-gated init hook (spangap/spangap-lcd).
- *  Seeds config defaults, spawns the nav worker, registers the launcher program
- *  + CLI verb + Settings pane. Defined in conditional/spangap-lcd/src/
- *  viewer_lcd.cpp; only linked when the lcd straddle is staged. */
+ *  Spawns the nav worker and registers the launcher app + CLI verb + Settings
+ *  pane. Defined in conditional/spangap-lcd/src/viewer_lcd.cpp; only linked when
+ *  the lcd straddle is staged. */
 void viewerLcdRegister(void);
 
 /** Web slice registration — the when:-gated init hook (spangap/spangap-web).

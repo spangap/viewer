@@ -2,9 +2,9 @@
  * viewer — normal init hook (always compiled).
  *
  * Registers the `webview` CLI verb, which sets the ephemeral key viewer.web.url;
- * the browser-side viewer module subscribes and pops its "Window → Viewer"
- * window open on that local document. (The LCD viewer + `lcdview` verb live in
- * the when:-gated viewerLcdRegister hook, conditional/spangap-lcd/.)
+ * the browser-side viewer module subscribes and pops its "Viewer" Dock window
+ * open on that local document. (The LCD viewer + `lcdview` verb live in the
+ * when:-gated viewerLcdRegister hook, conditional/spangap-lcd/.)
  *
  * webview is intentionally LCD-independent: it just writes a config key, so it
  * works on any build that has the web UI, with or without a display.
@@ -38,6 +38,6 @@ void viewerInit(void) {
      *                    update). This is the ONLY thing that auto-opens — out of
      *                    the box the device lands on the launcher / closed window.
      *   home_{lcd,web} — where the viewer goes when launched manually (tile tap /
-     *                    Window menu); falls back to the welcome page if unset.
+     *                    Dock app); falls back to the welcome page if unset.
      * Nothing is defaulted — absent = nothing to show / fall back to welcome. */
 }

@@ -2,7 +2,7 @@
   "name": "viewer",
   "version": "0.1.0",
   "type": "module",
-  "description": "Browser-side viewer: a local Markdown/HTML document window (Window → Viewer).",
+  "description": "Browser-side viewer: a local Markdown/HTML document window (the Viewer Dock app).",
   "license": "Apache-2.0",
   "exports": {
     "./modules/*": "./src/modules/*.ts",
