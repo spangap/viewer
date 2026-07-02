@@ -8,6 +8,9 @@ A tiny **HTML** / *Markdown* document viewer.
 
 Try a link: [About this viewer](ABOUT.md)
 
+See the [build manifest](BUILD.md) for the exact commit of every straddle in
+this image.
+
 Open a document from the CLI:
 
 ```
