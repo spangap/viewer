@@ -107,6 +107,7 @@ static void decodeEntity(const std::string& e, std::string& out) {
                       ? strtol(e.c_str() + 2, nullptr, 16)
                       : strtol(e.c_str() + 1, nullptr, 10);
         if (cp <= 0) return;
+        if (cp == 0x2014 || cp == 0x2013) { out.push_back('-'); return; }  /* em/en dash → '-' (font is Latin) */
         if (cp < 0x80) { out.push_back((char)cp); return; }
         if (cp < 0x800) {
             out.push_back((char)(0xC0 | (cp >> 6)));
@@ -211,6 +212,20 @@ struct HtmlParser {
     void ensureBlock() { if (!curOpen) startBlock(BT_PARA); }
 
     void addText(const char* s, size_t n) {
+        /* Fold em/en dash (UTF-8 E2 80 94 / E2 80 93) to '-': the proportional
+         * body/heading faces are Latin subsets with no U+2014 glyph, so a raw
+         * dash renders as a missing-glyph box. md4c passes source dashes through
+         * verbatim, so this is the common case (entity forms fold in decodeEntity). */
+        std::string folded;
+        for (size_t i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)s[i];
+            if (c == 0xE2 && i + 2 < n && (unsigned char)s[i + 1] == 0x80 &&
+                ((unsigned char)s[i + 2] == 0x94 || (unsigned char)s[i + 2] == 0x93)) {
+                folded.push_back('-'); i += 2;
+            } else folded.push_back((char)c);
+        }
+        s = folded.c_str(); n = folded.size();
+
         if (titleMode) {     /* capture <title>, whitespace-collapsed */
             for (size_t i = 0; i < n; i++) {
                 char c = s[i];
