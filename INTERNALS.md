@@ -45,7 +45,9 @@ bytes (already gunzipped if the on-disk file was `.gz`); we:
    web viewer's typographic CSS. The LCD's parser ignores `<head>`/`<style>` and
    renders the body.
 
-The output is a PSRAM buffer the web server frees after sending.
+The output is a PSRAM buffer the web server frees after sending. Because the
+transform runs inline on spangap-web's `web_file` worker, that task's stack was
+raised 5→8 KB to carry the MD4C parser's frames.
 
 `webRegisterFileExt`, whole-file serving, gzip inflate, `Accept-Encoding`
 negotiation, and the **loopback exemption** (so the LCD fetches
@@ -95,9 +97,21 @@ Entities are decoded (`decodeEntity`, incl. numeric). The parser also captures
   page builds tens of thousands of LVGL objects in PSRAM, exhausts it, and then
   ITS allocation fails system-wide — a huge doc takes the whole node down, not
   just the viewer. So input/IR/widget count are bounded; oversize content is
-  truncated with a notice. The deliberate non-goal is viewport virtualization:
-  LVGL already clips off-screen draws and PSRAM-allocates widgets, so a capped
-  whole-tree render is the chosen trade.
+  truncated with a notice.
+
+The **deliberate non-goal is viewport/widget virtualization** — we render the
+whole IR tree as widgets and let LVGL do the rest. Virtualization is tempting
+only if you conflate it with draw performance, and LVGL already does that work:
+drawing is clipped to invalidated areas (an off-screen widget costs ~0 to draw),
+scrolling just offsets children's cached coordinates (no relayout), and
+redraw/hit-test traversal is area-pruned, not O(all nodes) per frame. LVGL's
+allocator also routes to PSRAM (`spangap-lcd/…/lv_mem_spangap.cpp`), so the
+widget structs live in PSRAM, not scarce internal DRAM. The only real cost of a
+giant tree is peak PSRAM plus a one-time layout hitch at load — which the caps
+above bound. LVGL has no built-in widget recycling either, so virtualization
+would be a whole hand-built subsystem for no draw-time win. If a real document
+ever blows the PSRAM budget the answer is a tighter document cap, decided after
+measuring — not a recycler.
 
 ### Threading — never block the lcd task
 
@@ -153,6 +167,11 @@ it is set atomically with the app — there is no separate registration to race.
   consumes it); the load **retries** (~6× / 5 s) because at boot the web server
   may not be listening yet. `home_lcd` is only where a manual launch goes — the
   device otherwise lands on the launcher.
+- The `once_*` one-shot is the **only** auto-open (its intended use is delivering
+  the CHANGELOG on the next boot after an update). There is no `on_start` key
+  (removed) and no `s.viewer.urlbar` key — the address bar is Space-only (below),
+  not config-gated. All start-up keys are UNSET by default: a bare device lands on
+  the launcher and leaves the web window closed.
 
 ### Settings pane
 
@@ -179,7 +198,17 @@ worker, never the lcd task. Loopback fetches are plain HTTP (no TLS).
 
 `<ViewerWindow>` is a `FloatingWindow` wrapping a single `<iframe :src>`. Because
 the frame runs at the device origin, same-origin device pages get cookies (admin
-realms), images, links, and `#anchor` scrolling for free.
+realms), images, links, and `#anchor` scrolling for free. It loads whatever URL
+it's given (including `http(s)://` externals **in-frame**), rather than opening
+externals in a new tab.
+
+This is deliberately **not** a device-side reverse proxy. Routing the browser's
+upstream traffic through the ESP32 (a `/proxy` endpoint) would require the device
+to be an AP and a STA simultaneously (APSTA), which is unimplemented and was a can
+of worms — **shelved, don't re-propose**. The iframe sidesteps it by having the
+*browser* load the cross-origin URL directly (subject to the remote's framing
+policy), so the no-APSTA-proxy constraint still stands; we just never needed the
+proxy for the viewer.
 
 - `toSrc` rewrites `127.0.0.1`/`localhost` URLs to a **same-origin path** — in the
   browser those hosts mean the *user's* machine, not the device, so `webview
