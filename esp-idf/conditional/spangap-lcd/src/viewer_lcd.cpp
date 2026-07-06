@@ -663,6 +663,9 @@ static void renderDoc(void) {
     lv_obj_set_style_pad_left(col, 8, 0);
     lv_obj_set_style_pad_right(col, 8, 0);
     lv_obj_set_style_pad_top(col, 6, 0);
+    /* Trailing slack so the last line scrolls clear of the window-drag handle
+     * that overlaps the bottom edge (≈ one blank line to scroll past). */
+    lv_obj_set_style_pad_bottom(col, 20, 0);
     lv_obj_set_style_pad_row(col, 6, 0);
 
     int objs = 0;
