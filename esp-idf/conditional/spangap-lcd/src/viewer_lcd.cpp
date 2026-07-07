@@ -63,9 +63,16 @@
 #define C_HEAD   0x000000u
 #define C_RULE   0xccccccu
 
-#define BODY_FONT (&lv_font_montserrat_12_latin)
-#define HEAD_FONT (&lv_font_montserrat_16_latin)
-#define MONO_FONT (&lv_font_spleen_5x8)
+/* Vector faces via lcdFont(), sized at the platform UI zoom so the document
+ * scales with the rest of the shell (was hardcoded montserrat/spleen bitmaps).
+ * Emphasis stays colour-only (see header note), so body/heading are the regular
+ * UI face at two sizes; code is the mono face. */
+static inline const lv_font_t* viewerFont(LcdFace face, int basePx) {
+    return lcdFont(face, (int)(basePx * lcdUiScale() + 0.5f));
+}
+#define BODY_FONT viewerFont(LcdFace::UI,   14)
+#define HEAD_FONT viewerFont(LcdFace::UI,   16)
+#define MONO_FONT viewerFont(LcdFace::MONO, 11)
 
 /* Hard caps. Rendering an unbounded page (e.g. wikipedia) builds tens of
  * thousands of LVGL objects in PSRAM, exhausts it, and then ITS allocation
@@ -525,9 +532,10 @@ static void linkClicked(lv_event_t* e) {
 static void buildSpangroup(lv_obj_t* parent, const Block& b) {
     bool heading = b.type == BT_HEADING;
     lv_obj_t* sg = lv_spangroup_create(parent);
+    /* A fixed width (full-width) drives wrapping in LVGL 9.5; the old
+     * lv_spangroup_set_mode(LV_SPAN_MODE_BREAK) is deprecated and warns. */
     lv_obj_set_width(sg, lv_pct(100));
     lv_obj_set_height(sg, LV_SIZE_CONTENT);
-    lv_spangroup_set_mode(sg, LV_SPAN_MODE_BREAK);
 
     int padL = b.indent * 14 + (b.quote ? 12 : 0);
     if (padL) lv_obj_set_style_pad_left(sg, padL, 0);
