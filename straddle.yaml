@@ -4,14 +4,14 @@
 # Renders a growing subset of HTML — and Markdown (converted to HTML on-device
 # via the vendored MD4C) — into LVGL on the LCD. The whole viewer (parser, IR,
 # renderer, launcher program, CLI verb, http(s) fetch) lives in conditional
-# slices and registers via the when:-gated viewerLcdRegister hook.
+# slices and registers via the when:-gated ViewerApp service.
 #
-# viewerInit() registers the `webview` CLI verb (sets viewer.web.url so the
+# ViewerService registers the `webview` CLI verb (sets viewer.web.url so the
 # browser-side viewer window pops open); the LCD viewer + `lcdview` verb live in
-# the when:-gated viewerLcdRegister hook.
+# the when:-gated ViewerApp service (an LcdApp).
 #
 # Markdown→HTML is done server-side: conditional/spangap-web/ registers a .md
-# file-extension transform with the web server (viewerWebRegister, gated on
+# file-extension transform with the web server (ViewerWebService, gated on
 # spangap-web), so *.md / *.md.gz are converted on-device and served as
 # text/html. The welcome/about help pages ship as data/webroot/{WELCOME,ABOUT}.md.
 #
@@ -35,15 +35,17 @@ platforms: [idf]
 # viewer. Without net the viewer still builds and serves file:// only.
 additional_installs:
   - spangap/spangap-net
-init:
-  - call: viewerInit
-  - call: viewerLcdRegister
-    when: spangap/spangap-lcd
-  # Markdown→HTML now happens server-side: register the .md transform with the
-  # web server. Gated on spangap-web (NOT spangap-lcd), so it runs on headless
-  # builds too — the LCD viewer fetches the converted HTML from localhost.
-  - call: viewerWebRegister
-    when: spangap/spangap-web
+# Boot-registered services. ViewerService (core) registers the `webview` CLI
+# verb. ViewerApp is an LcdApp — its onInit installs the launcher tile and its
+# appInit does the LCD boot wiring (nav worker, `lcdview` verb, Settings pane);
+# gated on spangap-lcd. ViewerWebService registers the Markdown→HTML .md
+# transform with the web server; gated on spangap-web (NOT spangap-lcd), so it
+# runs on headless builds too — the LCD viewer fetches the converted HTML from
+# localhost.
+services:
+  - { class: ViewerService, header: viewer.h }
+  - { class: ViewerApp, header: viewer_app.h, when: spangap/spangap-lcd }
+  - { class: ViewerWebService, header: viewer_web.h, when: spangap/spangap-web }
 # Browser auto-registration: adds the "Viewer" Dock app (registerApp) and
 # subscribes to viewer.web.url. The buildable's MainLayout also mounts
 # ViewerWindow (parallel to NomadWindow/MapWindow).

@@ -4,7 +4,7 @@
  * Registers the `webview` CLI verb, which sets the ephemeral key viewer.web.url;
  * the browser-side viewer module subscribes and pops its "Viewer" Dock window
  * open on that local document. (The LCD viewer + `lcdview` verb live in the
- * when:-gated viewerLcdRegister hook, conditional/spangap-lcd/.)
+ * when:-gated ViewerApp service, conditional/spangap-lcd/.)
  *
  * webview is intentionally LCD-independent: it just writes a config key, so it
  * works on any build that has the web UI, with or without a display.
@@ -29,7 +29,7 @@ static void cliWebview(const char* args) {
     cliPrintf("opening %s in the web Viewer\n", args);
 }
 
-void viewerInit(void) {
+void ViewerService::onInit() {
     cliRegisterCmd("webview", cliWebview);
 
     /* Start-up locations (URLs, both front ends), all UNSET by default:

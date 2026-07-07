@@ -17,6 +17,7 @@
  * build still serves rendered Markdown over the web.
  */
 #include "viewer.h"
+#include "viewer_web.h"
 #include "web.h"
 #include "log.h"
 
@@ -176,9 +177,10 @@ static bool mdTransform(const char* name, const uint8_t* in, size_t inLen,
     return true;
 }
 
-/* when:-gated init hook (spangap/spangap-web). Registers the markdown transform;
- * without spangap-web staged this slice isn't compiled and the hook is absent. */
-void viewerWebRegister(void) {
+/* when:-gated service (services: ViewerWebService, spangap/spangap-web).
+ * Registers the markdown transform; without spangap-web staged this slice isn't
+ * compiled and the service is absent. */
+void ViewerWebService::onInit() {
     webRegisterFileExt("md,markdown,mkd", mdTransform);
     info("markdown→HTML transform registered\n");
 }

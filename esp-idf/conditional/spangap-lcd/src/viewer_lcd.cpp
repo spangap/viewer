@@ -37,6 +37,7 @@
 #include "mem.h"          /* STACK_PSRAM */
 #include "lcd.h"          /* pulls in lvgl.h; fonts */
 #include "lcd_app.h"      /* LcdApp + lcdInstall */
+#include "viewer_app.h"   /* ViewerApp — this straddle's services: class */
 #include "fs.h"
 #include "storage.h"
 
@@ -894,17 +895,20 @@ static void viewerOnShow(void*) {
     requestNav(home);
 }
 
-/* ViewerApp — onCreate builds the page + address bar once; onShow runs the
- * manual-launch home navigation; onClose nulls the widget handles so the next
- * open rebuilds (viewerApp's "if (s_page) return" reopen guard depends on s_page
- * being null after the layer is freed). */
-class ViewerApp : public LcdApp {
-public:
-    ViewerApp() : LcdApp({ .name = "Info", .iconBasename = "viewer" }) {}
-    void onCreate(lv_obj_t* root) override { viewerApp(root); }
-    void onShow() override { viewerOnShow(nullptr); }
-    void onClose() override { s_page = nullptr; s_bar = nullptr; s_urlbar = nullptr; s_linkHrefs.clear(); }
-};
+/* ViewerApp — the launcher program as an LcdApp (and thus a Service). onCreate
+ * builds the page + address bar once; onShow runs the manual-launch home
+ * navigation; onClose nulls the widget handles so the next open rebuilds
+ * (viewerApp's "if (s_page) return" reopen guard depends on s_page being null
+ * after the layer is freed). Declared in viewer_app.h (global, so the generated
+ * services: trampoline can `new` it); defined here where the file-static viewer
+ * state lives. */
+ViewerApp::ViewerApp() : LcdApp({ .name = "Info", .iconBasename = "viewer" }) {}
+
+void ViewerApp::onCreate(lv_obj_t* root) { viewerApp(root); }
+
+void ViewerApp::onShow() { viewerOnShow(nullptr); }
+
+void ViewerApp::onClose() { s_page = nullptr; s_bar = nullptr; s_urlbar = nullptr; s_linkHrefs.clear(); }
 
 /* ─────────────── CLI + Settings ─────────────── */
 
@@ -932,22 +936,20 @@ static void viewerSettings(void* arg) {
     lcdSettingValue  (p, "Location", "viewer.lcd.url");
 }
 
-/* ─────────────── init ─────────────── */
+/* ─────────────── boot-task wiring (appInit) ─────────────── */
 
-/* Register the viewer program — a when:-gated init hook (spangap/spangap-lcd).
- * Everything the viewer does is the LCD viewer, so all of it is gated here;
- * without lcd staged the hook is never called (viewerInit stays a no-op). */
-void viewerLcdRegister(void) {
+/* ViewerApp::appInit — the boot-task half of bring-up, run once by
+ * LcdApp::onInit() right after it hops the launcher-tile install onto the lcd
+ * task. Everything the viewer does is the LCD viewer; this whole file lives
+ * under conditional/spangap-lcd/, compiled only when the lcd straddle is staged,
+ * so no #if is needed — no lcd, no ViewerApp, no services: registration. */
+void ViewerApp::appInit() {
     s_mux = xSemaphoreCreateMutex();
 
     /* generous stack: the worker runs the TLS handshake (mbedtls) for external
      * https; localhost fetches are plain HTTP. */
     s_worker = spawnTask(viewerWorker, "viewer", 24576, nullptr, 1, 1, STACK_PSRAM);
     cliRegisterCmd("lcdview", cliViewer);   /* LCD viewer; the web counterpart is `webview` */
-    /* "Info" tile + red ? icon; viewerOnShow sends a manual launch to home_lcd.
-     * The show callback rides in lcdRegister so it's set atomically with the entry
-     * on the lcd task (a separate setter would race the queued registration). */
-    lcdRun([](void*) { lcdInstall(new ViewerApp()); });   /* tile build is LVGL: on the lcd task */
     lcdRegisterSettings("Viewer", "Viewer", viewerSettings);
 
     /* Boot start: ONLY a one-shot once_lcd auto-opens the viewer (then it's
