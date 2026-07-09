@@ -16,8 +16,11 @@
 import { ref, watch } from 'vue'
 import { useDeviceStore } from 'spangap-browser/stores/device'
 import { registerApp } from 'spangap-browser/lib/apps'
+import { registerWindowMount } from 'spangap-browser/lib/windowMounts'
+import ViewerWindow from '../panels/ViewerWindow.vue'
 
-/* Window visibility + focus nonce — MainLayout binds these to the window. */
+/* Window visibility + focus nonce — <StraddleWindows/> binds these to the
+ * window via the mount registered below. */
 export const viewerWebVisible = ref(false)
 export const viewerWebFocus = ref(0)
 
@@ -32,7 +35,7 @@ function homeWeb(device: ReturnType<typeof useDeviceStore>): string {
   return typeof h === 'string' && h ? h : HOME_FALLBACK
 }
 
-/* Make the window visible and raise it to the front (the focus nonce → MainLayout
+/* Make the window visible and raise it to the front (the focus nonce → mount
  * → FloatingWindow.bringToFront). On page load other windows call bringToFront()
  * from their localStorage restore on mount, which can land them above us if they
  * run just after; re-raise on the next macrotask so the viewer ends up on top
@@ -56,6 +59,9 @@ export function registerViewer() {
   /* Dock app — opens the document viewer window on its home page. */
   registerApp({ id: 'viewer', label: 'Viewer', icon: 'viewer', placement: 7,
                 open: showViewer, isOpen: () => viewerWebVisible.value })
+
+  registerWindowMount({ id: 'viewer', title: 'Viewer', component: ViewerWindow,
+                        visible: viewerWebVisible, focusToken: viewerWebFocus })
 
   /* `webview <path>` on the device sets ephemeral viewer.web.url → open it. */
   watch(() => device.get('viewer.web.url'), (u) => {

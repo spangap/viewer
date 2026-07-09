@@ -132,7 +132,7 @@ function onLoad() {
     d?.addEventListener('click', hideAddr)
     /* A mousedown inside the iframe doesn't reach the window's own
      * @mousedown="bringToFront", so foreground the window ourselves — bumping the
-     * focus nonce drives FloatingWindow.bringToFront via MainLayout. */
+     * focus nonce drives FloatingWindow.bringToFront via the window mount. */
     d?.addEventListener('mousedown', foreground)
     /* Focus the content so Space (→ address bar) and scrolling work without a
      * click first; the document keydown above then reaches us. */
