@@ -8,7 +8,9 @@
  * Start-up (mirrors the LCD), driven by device config (see firmware viewer.cpp):
  *   - on the first storage sync, a one-shot `s.viewer.once_web` opens the window
  *     (then is consumed) and is raised on top, after any windows the SPA restored
- *     from localStorage. That one-shot is the ONLY thing that auto-opens.
+ *     from localStorage.
+ *   - failing that, a fresh install (no saved windows in localStorage) opens the
+ *     window on its home page, so the first visit isn't a bare desktop.
  *   - opening it from the Dock (a manual launch) goes to `home_web`.
  *   - the device CLI verb `webview <path>` (ephemeral `viewer.web.url`) opens that
  *     exact path.
@@ -29,6 +31,20 @@ export const viewerWebFocus = ref(0)
 export const viewerWebUrl = ref('')
 
 const HOME_FALLBACK = '/WELCOME.md'
+
+/* A fresh install has no saved windows: FloatingWindow persists each window's
+ * geometry under `spangap.win.<id>` in localStorage, so the absence of any such
+ * key means this browser has never arranged the desktop. */
+function isFreshInstall(): boolean {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      if (localStorage.key(i)?.startsWith('spangap.win.')) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
 
 function homeWeb(device: ReturnType<typeof useDeviceStore>): string {
   const h = device.get('s.viewer.home_web')
@@ -69,8 +85,9 @@ export function registerViewer() {
   })
 
   /* Start-up: the viewer OWNS its open state on each load (overriding whatever
-   * FloatingWindow restored from localStorage). ONLY a one-shot once_web opens it
-   * (then is consumed); otherwise it stays closed. We trigger on `device.synced`
+   * FloatingWindow restored from localStorage). A one-shot once_web opens it
+   * (then is consumed), else a fresh install opens it on home; otherwise it stays
+   * closed. We trigger on `device.synced`
    * — the first full storage dump — so s.viewer.* values are populated (raw
    * `connected` fires too early). raise() runs after the SPA restored its saved
    * windows, so the viewer ends up on top. */
@@ -82,6 +99,12 @@ export function registerViewer() {
     if (typeof once === 'string' && once) {
       viewerWebUrl.value = once
       device.set('s.viewer.once_web', '')          /* consume the one-shot */
+      raise()
+    } else if (isFreshInstall()) {
+      /* First visit from this browser (no saved desktop): greet with the
+       * viewer's home page instead of a bare background. Opening it persists
+       * `spangap.win.viewer`, so this only fires once. */
+      viewerWebUrl.value = homeWeb(device)
       raise()
     } else {
       viewerWebVisible.value = false               /* nothing to show — stay closed */
