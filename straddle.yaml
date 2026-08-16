@@ -57,6 +57,7 @@ browser_register:
 # current location and how to reach the bar.
 settings:
   - at:
+      - { id: apps }
       - { id: viewer, label: "Viewer", short: "Viewer" }
     rows:
       - section: "Viewer"
