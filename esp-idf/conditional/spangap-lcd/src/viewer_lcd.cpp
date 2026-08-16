@@ -929,12 +929,6 @@ static void cliViewer(const char* args) {
     cliPrintf("opening %s\n", args);
 }
 
-static void viewerSettings(void* arg) {
-    lv_obj_t* p = (lv_obj_t*)arg;
-    lcdSettingSection(p, "Viewer");
-    lcdSettingCaption(p, "Press Space in the viewer to show the address bar.");
-    lcdSettingValue  (p, "Location", "viewer.lcd.url");
-}
 
 /* ─────────────── boot-task wiring (appInit) ─────────────── */
 
@@ -950,7 +944,6 @@ void ViewerApp::appInit() {
      * https; localhost fetches are plain HTTP. */
     s_worker = spawnTask(viewerWorker, "viewer", 24576, nullptr, 1, 1, STACK_PSRAM);
     cliRegisterCmd("lcdview", cliViewer);   /* LCD viewer; the web counterpart is `webview` */
-    lcdRegisterSettings("Viewer", "Viewer", viewerSettings);
 
     /* Boot start: ONLY a one-shot once_lcd auto-opens the viewer (then it's
      * consumed) — e.g. to show a CHANGELOG after an update. Otherwise the device

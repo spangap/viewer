@@ -175,10 +175,10 @@ it is set atomically with the app — there is no separate registration to race.
 
 ### Settings pane
 
-`lcdRegisterSettings("Viewer", "Viewer", viewerSettings)` adds a generated pane:
-`lcdSettingSection("Viewer")`, a `lcdSettingCaption` hint ("Press Space in the
-viewer to show the address bar."), and a read-only `lcdSettingValue("Location",
-"viewer.lcd.url")` mirroring the current LCD location.
+The `settings:` block in `straddle.yaml` describes the pane and the build lowers
+it to both surfaces: a caption pointing at the address bar (which lives in the
+viewer itself, not here) and a read-only `viewer.lcd.url` row mirroring the
+current location.
 
 ### Address bar on Space
 

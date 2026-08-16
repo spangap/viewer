@@ -37,8 +37,8 @@ additional_installs:
   - spangap/spangap-net
 # Boot-registered services. ViewerService (core) registers the `webview` CLI
 # verb. ViewerApp is an LcdApp — its onInit installs the launcher tile and its
-# appInit does the LCD boot wiring (nav worker, `lcdview` verb, Settings pane);
-# gated on spangap-lcd. ViewerWebService registers the Markdown→HTML .md
+# appInit does the LCD boot wiring (nav worker, `lcdview` verb); gated on
+# spangap-lcd. ViewerWebService registers the Markdown→HTML .md
 # transform with the web server; gated on spangap-web (NOT spangap-lcd), so it
 # runs on headless builds too — the LCD viewer fetches the converted HTML from
 # localhost.
@@ -51,3 +51,14 @@ services:
 # ViewerWindow (parallel to NomadWindow/MapWindow).
 browser_register:
   - call: registerViewer
+
+# Declarative settings: both surfaces from one block. Nothing here is
+# interactive — the address bar lives in the viewer itself — so the pane is the
+# current location and how to reach the bar.
+settings:
+  - at:
+      - { id: viewer, label: "Viewer", short: "Viewer" }
+    rows:
+      - section: "Viewer"
+      - caption: "Press Space in the viewer to show the address bar."
+      - value: { label: "Location", key: "viewer.lcd.url", copyable: true }
