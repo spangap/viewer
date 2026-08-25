@@ -51,15 +51,3 @@ services:
 # ViewerWindow (parallel to NomadWindow/MapWindow).
 browser_register:
   - call: registerViewer
-
-# Declarative settings: both surfaces from one block. Nothing here is
-# interactive — the address bar lives in the viewer itself — so the pane is the
-# current location and how to reach the bar.
-settings:
-  - at:
-      - { id: apps }
-      - { id: viewer, label: "Viewer", short: "Viewer" }
-    rows:
-      - section: "Viewer"
-      - caption: "Press Space in the viewer to show the address bar."
-      - value: { label: "Location", key: "viewer.lcd.url", copyable: true }
