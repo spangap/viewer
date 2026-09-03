@@ -862,6 +862,7 @@ static void viewerApp(void* arg) {
     lv_obj_set_flex_grow(s_urlbar, 1);
     lv_obj_set_style_text_font(s_urlbar, MONO_FONT, 0);
     if (lcdInputGroup()) lv_group_add_obj(lcdInputGroup(), s_urlbar);
+    lcdKeyboardAttach(s_urlbar);   /* no keys on the device → tap types; Enter navigates */
     lv_obj_add_event_cb(s_urlbar, urlbarFocusCb, LV_EVENT_CLICKED,   nullptr);
     lv_obj_add_event_cb(s_urlbar, urlbarReady,   LV_EVENT_READY,     nullptr);
     lv_obj_add_event_cb(s_urlbar, urlbarDefocus, LV_EVENT_DEFOCUSED, nullptr);
